@@ -29,11 +29,37 @@ import numpy as np
 # Project imports
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from config import Sim_Config
 from models.city_grid import CityGrid
 from simulation.engine import SimulationEngine
 from models.traffic_model import TrafficModel
+from pipeline.load_city import load_city
+
+# When set (via --real PATH), build the city from the cleaned real OSM dataset
+# instead of the synthetic grid. Set in main().
+REAL_CITY_DB: Optional[str] = None
+
+
+def build_city(seed: int):
+    """Construct the city for one evaluation: real cleaned OSM data if a DB was
+    provided, otherwise the synthetic procedural grid."""
+    if REAL_CITY_DB is not None:
+        return load_city(REAL_CITY_DB)
+    cfg = Sim_Config
+    return CityGrid(
+        width=cfg.grid.width,
+        height=cfg.grid.height,
+        spacing=cfg.grid.spacing,
+        diagonal=cfg.grid.diagonal,
+        seed=seed,
+        edge_keep=cfg.grid.edge_keep,
+        diag_keep=cfg.grid.diag_keep,
+        population_range=cfg.grid.population_range,
+        density_range=cfg.grid.density_range,
+        clusters_per_zone=cfg.grid.clusters_per_zone,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -369,21 +395,10 @@ def run_simulation(
     """
     try:
         cfg = Sim_Config
-        
-        # Create city
-        city = CityGrid(
-            width=cfg.grid.width,
-            height=cfg.grid.height,
-            spacing=cfg.grid.spacing,
-            diagonal=cfg.grid.diagonal,
-            seed=seed,
-            edge_keep=cfg.grid.edge_keep,
-            diag_keep=cfg.grid.diag_keep,
-            population_range=cfg.grid.population_range,
-            density_range=cfg.grid.density_range,
-            clusters_per_zone=cfg.grid.clusters_per_zone,
-        )
-        
+
+        # Create city (real cleaned OSM data or synthetic grid)
+        city = build_city(seed)
+
         # Apply policy: road capacity
         apply_capacity_scale(city, policy.road_capacity_scale)
         
@@ -808,18 +823,26 @@ def parse_args() -> argparse.Namespace:
         help="Output best policy JSON path"
     )
     parser.add_argument(
+        "--real",
+        type=str,
+        default=None,
+        metavar="DB",
+        help="Path to cleaned real-city SQLite (data/clean/city.db). "
+             "If given, optimize on real OSM data instead of the synthetic grid."
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable verbose logging"
     )
-    
+
     return parser.parse_args()
 
 
 def main() -> None:
     """Main entry point for optimization."""
     args = parse_args()
-    
+
     # Configure logging
     log_level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(
@@ -827,7 +850,14 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    
+
+    # Select data source: real cleaned OSM city or synthetic grid
+    global REAL_CITY_DB
+    REAL_CITY_DB = args.real
+    if REAL_CITY_DB:
+        city = load_city(REAL_CITY_DB)
+        logger.info(f"Using REAL city from {REAL_CITY_DB}: {city!r}")
+
     # Create optimization configuration
     opt_cfg = OptConfig(
         n_trials=args.trials,
